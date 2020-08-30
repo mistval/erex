@@ -11,10 +11,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "eris": "*"
+    "eris": "*",
+    "node-fetch": "*"
   },
   "devDependencies": {
     "@types/node": "^14.0.24",
+    "@types/node-fetch": "^2.5.7",
     "typescript": "^3.9.7"
   }
 }
