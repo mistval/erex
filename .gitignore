@@ -2,3 +2,4 @@ test.ts
 **/*.js
 **/*.js.map
 node_modules
+**/*.d.ts

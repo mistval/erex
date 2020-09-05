@@ -99,6 +99,10 @@ export class ReactionButtonsContext {
       return;
     }
 
+    if (userId === this._selfUserId) {
+      return;
+    }
+
     if (this._allowReactionsFrom.length > 0 && !this._allowReactionsFrom.includes(userId)) {
       return;
     }
@@ -122,6 +126,11 @@ export class ReactionButtonManager extends EventEmitter {
 
   constructor(selfUserId: string, options: { expirationTimeInMs?: number, removeButtonsOnUnregister?: boolean } = {}) {
     super();
+
+    if (!selfUserId) {
+      throw new Error('Must pass in bot\'s own ID as first constructor argument.');
+    }
+
     this.expirationTimeInMs = options.expirationTimeInMs || 60000;
     this.removeButtonsOnUnregister = options.removeButtonsOnUnregister || false;
     this.contextForMessageId = {};
