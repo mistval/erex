@@ -1,9 +1,8 @@
 import { Message, Emoji, GuildTextableChannel } from 'eris';
-import { EventEmitter } from 'events';
 import retryPromise from '../util/retry_promise';
 
-type ReactionHandlerFunc = (msg: Message, emoji: Emoji, userId: string, added: boolean) => any;
-type HandlerFuncForReactionDictionary = { [reaction: string]: ReactionHandlerFunc };
+export type ReactionHandlerFunc = (msg: Message, emoji: Emoji, userId: string, added: boolean) => any;
+export type HandlerFuncForReactionDictionary = { [reaction: string]: ReactionHandlerFunc };
 
 interface ContextObserver {
   _onCancel: (msgId: string) => any;
@@ -148,14 +147,12 @@ export class ReactionButtonsContext {
   }
 }
 
-export class ReactionButtonManager extends EventEmitter implements ContextObserver {
+export class ReactionButtonManager implements ContextObserver {
   selfUserId: string;
   expirationTimeInMs: number;
   contextForMessageId: { [messageId: string]: ReactionButtonsContext } = {};
 
   constructor(selfUserId: string, options: { expirationTimeInMs?: number } = {}) {
-    super();
-
     if (!selfUserId) {
       throw new Error('Must pass in bot\'s own ID as first constructor argument.');
     }
@@ -186,7 +183,7 @@ export class ReactionButtonManager extends EventEmitter implements ContextObserv
     delete this.contextForMessageId[msgId];
   }
 
-  async registerHandler(
+  async add(
     msg: Message,
     allowReactionsFrom: string[],
     handlerFuncForReaction: HandlerFuncForReactionDictionary,
