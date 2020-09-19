@@ -111,8 +111,7 @@ export class ReactionButtonsContext {
 
     await retryPromise(() => this._msg.addReaction(reaction));
 
-    handlerFunc.bind(this);
-    this._handlerFuncForReaction[reaction] = handlerFunc;
+    this._handlerFuncForReaction[reaction] = handlerFunc.bind(this);
   }
 
   disable() {

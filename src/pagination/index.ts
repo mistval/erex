@@ -51,6 +51,7 @@ export class PageController {
   private _showArrows = true;
   private _message?: Message;
   private _editDebouncer = new Debouncer(this._editWithCurrentState.bind(this));
+  private _editPromise = Promise.resolve();
 
   constructor(pageSourceForEmoji: { [emoji: string]: PageSource }, showArrows = true) {
     this._pageSourceForEmoji = pageSourceForEmoji;
@@ -62,6 +63,13 @@ export class PageController {
       Object.keys(pageSourceForEmoji).map(emoji => [
         emoji,
         Number.MAX_SAFE_INTEGER,
+      ]),
+    );
+
+    this._pageCache = Object.fromEntries(
+      Object.keys(pageSourceForEmoji).map(emoji => [
+        emoji,
+        {},
       ]),
     );
   }
@@ -172,21 +180,25 @@ export class PageController {
     return pageNum;
   }
 
-  private async _editWithCurrentState() {
+  private _editWithCurrentState() {
     assert(this._message, 'No message');
 
-    if (
-      this._currentEmoji === this._lastSentEmoji
-      && this._currentPageNum === this._lastSentPageNum
-    ) {
-      return;
-    }
+    return this._editPromise = this._editPromise
+      .catch(_ => {})
+      .then(() => {
+        if (
+          this._currentEmoji === this._lastSentEmoji
+          && this._currentPageNum === this._lastSentPageNum
+        ) {
+          return;
+        }
 
-    this._lastSentEmoji = this._currentEmoji;
-    this._lastSentPageNum = this._currentPageNum;
+        this._lastSentEmoji = this._currentEmoji;
+        this._lastSentPageNum = this._currentPageNum;
 
-    const currentPage = this._getCurrentPage();
-    await retryPromise(() => this._message!.edit(currentPage));
+        const currentPage = this._getCurrentPage();
+        return retryPromise(() => this._message!.edit(currentPage));
+      });
   }
 
   async _movePageNum(distance: number) {
