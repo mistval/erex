@@ -1,54 +1,70 @@
 import { Message, Emoji, GuildTextableChannel } from 'eris';
 import { EventEmitter } from 'events';
+import retryPromise from '../util/retry_promise';
 
 type ReactionHandlerFunc = (msg: Message, emoji: Emoji, userId: string, added: boolean) => any;
 type HandlerFuncForReactionDictionary = { [reaction: string]: ReactionHandlerFunc };
-type UnregisterOptions = { removeButtons: boolean };
+
+interface ContextObserver {
+  _onCancel: (msgId: string) => any;
+}
 
 export class ReactionButtonsContext {
   private _selfUserId: string;
   private _msg: Message;
-  private _disabled: boolean = false;
   private _allowReactionsFrom: string[];
-  _handlerFuncForReaction: HandlerFuncForReactionDictionary;
-  _timeoutHandle: NodeJS.Timeout;
-  unregister: (options: UnregisterOptions) => Promise<any>;
+  private _handlerFuncForReaction: HandlerFuncForReactionDictionary;
+  private _timeoutMs: number;
+  private _observer: ContextObserver;
+  private _disabled: boolean = false;
+  private _timeoutHandle?: NodeJS.Timeout;
 
   constructor(
     selfUserId: string,
     msg: Message,
     allowReactionsFrom: string[],
     handlerFuncForReaction: HandlerFuncForReactionDictionary,
-    timeoutHandle: NodeJS.Timeout,
-    unregister: (options: UnregisterOptions) => Promise<any>,
+    timeoutMs: number,
+    observer: ContextObserver,
   ) {
     this._selfUserId = selfUserId;
     this._msg = msg;
-    this._handlerFuncForReaction = handlerFuncForReaction;
-    this._timeoutHandle = timeoutHandle;
     this._allowReactionsFrom = allowReactionsFrom;
-    this.unregister = unregister;
+    this._timeoutMs = timeoutMs;
+    this._observer = observer;
 
-    Object.entries(handlerFuncForReaction).forEach(([reaction, func]) => {
-      handlerFuncForReaction[reaction] = func.bind(this);
-    });
+    this._handlerFuncForReaction = Object.fromEntries(
+      Object.entries(handlerFuncForReaction).map(([reaction, func]) => [
+        reaction,
+        func.bind(this),
+      ]),
+    );
   }
 
   async _initialize() {
-    let error;
-    for (let reaction of Object.keys(this._handlerFuncForReaction)) {
-      try {
-        await this._msg.addReaction(reaction);
-      } catch (err) {
-        // TODO: Dont try to add more buttons if permission error.
-        // TODO: Retries
-        error = err;
-      }
+    setTimeout(() => {
+      this.cancel();
+    }, this._timeoutMs);
+
+    if (!this._canAddReactions()) {
+      const err = new Error('Do not have permission to add reactions.');
+      (err as any).code = 60013;
+      throw err;
     }
 
-    if (error) {
-      throw error;
+    for (let reaction of Object.keys(this._handlerFuncForReaction)) {
+      await retryPromise(() => this._msg.addReaction(reaction));
     }
+  }
+
+  private _canAddReactions() {
+    const guildChannel = this._msg.channel as GuildTextableChannel;
+    if (!guildChannel.guild) {
+      return true;
+    }
+
+    const permissions = guildChannel.permissionsOf(this._selfUserId);
+    return permissions.has('addReactions') && permissions.has('readMessageHistory');
   }
 
   private _canRemoveOtherUserReactions() {
@@ -56,22 +72,36 @@ export class ReactionButtonsContext {
     return guildChannel.guild && guildChannel.permissionsOf(this._selfUserId).has('manageMessages');
   }
 
+  async cancel() {
+    if (this._timeoutHandle) {
+      clearTimeout(this._timeoutHandle);
+    }
+
+    this._observer._onCancel(this._msg.id);
+    await this.removeAllButtons();
+  }
+
   async removeButton(reaction: string) {
     if (this._handlerFuncForReaction[reaction]) {
       delete this._handlerFuncForReaction[reaction];
 
       if (this._canRemoveOtherUserReactions()) {
-        await this._msg.removeMessageReactionEmoji(reaction);
+        await retryPromise(() => this._msg.removeMessageReactionEmoji(reaction));
       } else {
-        await this._msg.removeReaction(reaction);
+        await retryPromise(() => this._msg.removeReaction(reaction));
       }
     }
   }
 
   async removeAllButtons() {
+    const reactions = Object.keys(this._handlerFuncForReaction);
     this._handlerFuncForReaction = {};
     if (this._canRemoveOtherUserReactions()) {
-      await this._msg.removeReactions();
+      await retryPromise(() => this._msg.removeReactions());
+    } else {
+      await Promise.all(
+        reactions.map(reaction => retryPromise(() => this._msg.removeReaction(reaction))),
+      );
     }
   }
 
@@ -80,7 +110,7 @@ export class ReactionButtonsContext {
       throw new Error('A handler is already registered for that button. Use removedButton to remove it.');
     }
 
-    await this._msg.addReaction(reaction);
+    await retryPromise(() => this._msg.addReaction(reaction));
 
     handlerFunc.bind(this);
     this._handlerFuncForReaction[reaction] = handlerFunc;
@@ -118,79 +148,63 @@ export class ReactionButtonsContext {
   }
 }
 
-export class ReactionButtonManager extends EventEmitter {
+export class ReactionButtonManager extends EventEmitter implements ContextObserver {
   selfUserId: string;
   expirationTimeInMs: number;
-  removeButtonsOnUnregister: boolean;
-  contextForMessageId: { [messageId: string]: ReactionButtonsContext };
+  contextForMessageId: { [messageId: string]: ReactionButtonsContext } = {};
 
-  constructor(selfUserId: string, options: { expirationTimeInMs?: number, removeButtonsOnUnregister?: boolean } = {}) {
+  constructor(selfUserId: string, options: { expirationTimeInMs?: number } = {}) {
     super();
 
     if (!selfUserId) {
       throw new Error('Must pass in bot\'s own ID as first constructor argument.');
     }
 
-    this.expirationTimeInMs = options.expirationTimeInMs || 60000;
-    this.removeButtonsOnUnregister = options.removeButtonsOnUnregister || false;
-    this.contextForMessageId = {};
+    this.expirationTimeInMs = options.expirationTimeInMs || 120000;
     this.selfUserId = selfUserId;
   }
 
   handleMessageReactionAdd(msg: Message, emoji: Emoji, userId: string) {
     const context = this.contextForMessageId[msg.id];
     if (context) {
-      context._handleMessageReaction(msg, emoji, userId, true);
+      return context._handleMessageReaction(msg, emoji, userId, true);
     }
+
+    return undefined;
   }
 
   handleMessageReactionRemove(msg: Message, emoji: Emoji, userId: string) {
     const context = this.contextForMessageId[msg.id];
     if (context) {
-      context._handleMessageReaction(msg, emoji, userId, false);
+      return context._handleMessageReaction(msg, emoji, userId, false);
     }
+
+    return undefined;
   }
 
-  async unregisterHandler(msg: Message, options: UnregisterOptions) {
-    const context = this.contextForMessageId[msg.id];
-    if (context) {
-      delete this.contextForMessageId[msg.id];
-      clearTimeout(context._timeoutHandle);
-
-      if (options.removeButtons) {
-        await context.removeAllButtons();
-      }
-    }
+  _onCancel(msgId: string) {
+    delete this.contextForMessageId[msgId];
   }
 
   async registerHandler(
     msg: Message,
     allowReactionsFrom: string[],
     handlerFuncForReaction: HandlerFuncForReactionDictionary,
-    options: { expirationTimeInMs?: number, removeButtonsOnExpire?: boolean } = {},
+    options: { expirationTimeInMs?: number } = {},
   ) {
     if (this.contextForMessageId[msg.id] !== undefined) {
       throw new Error('There is already a reaction button handler registered for that message');
     }
 
     const timeoutMs = options.expirationTimeInMs || this.expirationTimeInMs;
-    const removeButtonsOnExpire = options.removeButtonsOnExpire || this.removeButtonsOnUnregister;
-
-    const timeoutHandle = setTimeout(async () => {
-      try {
-        await this.unregisterHandler(msg, { removeButtons: removeButtonsOnExpire });
-      } catch (err) {
-        this.emit('error', { msg, err });
-      }
-    }, timeoutMs);
 
     const context = new ReactionButtonsContext(
       this.selfUserId,
       msg,
       allowReactionsFrom,
       handlerFuncForReaction,
-      timeoutHandle,
-      (unregisterOptions: UnregisterOptions) => this.unregisterHandler(msg, unregisterOptions),
+      timeoutMs,
+      this,
     );
 
     this.contextForMessageId[msg.id] = context;

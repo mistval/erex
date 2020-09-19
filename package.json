@@ -1,6 +1,6 @@
 {
   "name": "erex",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "WIP library of extensions for the eris Discord bot library.",
   "main": "dist/index.js",
   "scripts": {
